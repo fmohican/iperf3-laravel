@@ -1,10 +1,11 @@
-name: tests
+name: release-tests
 
 on:
+  release:
+    types: [published]
   push:
-    branches: [master]
-  pull_request:
-    branches: [master]
+    tags:
+      - 'v*.*.*'
 
 jobs:
   test:
