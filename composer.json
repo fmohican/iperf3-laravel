@@ -1,0 +1,53 @@
+{
+    "name": "fmohican/iperf3-laravel",
+    "description": "A fast, strongly typed iperf3 JSON parser for Laravel",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "iperf3",
+        "laravel",
+        "network",
+        "performance"
+    ],
+    "require": {
+        "php": "^8.5",
+        "ext-json": "*",
+        "illuminate/contracts": "^13.0",
+        "illuminate/support": "^13.0"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.27",
+        "orchestra/testbench": "^11.2",
+        "phpunit/phpunit": "^12.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "fmohican\\Iperf3Laravel\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "fmohican\\Iperf3Laravel\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "lint": "pint --test",
+        "format": "pint"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "fmohican\\Iperf3Laravel\\Iperf3ServiceProvider"
+            ],
+            "aliases": {
+                "Iperf3": "fmohican\\Iperf3Laravel\\Facades\\Iperf3"
+            }
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
