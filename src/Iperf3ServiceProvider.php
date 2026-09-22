@@ -15,9 +15,15 @@ final class Iperf3ServiceProvider extends ServiceProvider
 
         $this->app->singleton(
             Iperf3Parser::class,
-            static fn(Application $app): Iperf3Parser => new Iperf3Parser(
-                maxInputBytes: (int) $app['config']->get('iperf3.max_input_bytes', 64 * 1024 * 1024),
-            ),
+            static function (Application $app): Iperf3Parser {
+                $maxInputBytes = $app['config']->get('iperf3.max_input_bytes', 64 * 1024 * 1024);
+
+                if (! is_int($maxInputBytes)) {
+                    throw new \InvalidArgumentException('iperf3.max_input_bytes must be a positive integer.');
+                }
+
+                return new Iperf3Parser(maxInputBytes: $maxInputBytes);
+            },
         );
 
         $this->app->alias(Iperf3Parser::class, 'iperf3');

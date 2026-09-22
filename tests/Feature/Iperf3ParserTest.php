@@ -53,6 +53,26 @@ final class Iperf3ParserTest extends TestCase
         );
     }
 
+    public function test_the_container_rejects_a_non_integer_size_limit(): void
+    {
+        $this->app['config']->set('iperf3.max_input_bytes', '67108864');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('iperf3.max_input_bytes must be a positive integer');
+
+        $this->app->make(Iperf3Parser::class);
+    }
+
+    public function test_the_container_rejects_a_zero_size_limit(): void
+    {
+        $this->app['config']->set('iperf3.max_input_bytes', 0);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('maximum input size must be a positive integer');
+
+        $this->app->make(Iperf3Parser::class);
+    }
+
     private function fixture(string $name): string
     {
         return dirname(__DIR__) . DIRECTORY_SEPARATOR . 'Fixtures' . DIRECTORY_SEPARATOR . $name;

@@ -1,0 +1,31 @@
+{
+	"start":	{
+		"connected":	[{
+				"socket":	5,
+				"local_host":	"192.168.0.100",
+				"local_port":	58201,
+				"remote_host":	"192.168.0.100",
+				"remote_port":	5173
+			}],
+		"version":	"iperf 3.19.1",
+		"system_info":	"CYGWIN_NT-10.0-26200 DESKTOP-OJM2J6F 3.6.4-1.x86_64 2025-07-15 07:55 UTC x86_64",
+		"timestamp":	{
+			"time":	"Mon, 07 Sep 2026 18:45:07 GMT",
+			"timesecs":	1788806707
+		},
+		"connecting_to":	{
+			"host":	"192.168.0.100",
+			"port":	5173
+		},
+		"cookie":	"5l2ibev6kruxwv5ynfpniel5axaxtjkcfhjz",
+		"target_bitrate":	1000000000,
+		"fq_rate":	0,
+		"sock_bufsize":	0,
+		"sndbuf_actual":	65536,
+		"rcvbuf_actual":	65536
+	},
+	"intervals":	[],
+	"end":	{
+	},
+	"error":	"unable to read from stream socket: Resource temporarily unavailable"
+}

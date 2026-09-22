@@ -48,6 +48,10 @@ try {
 }
 ```
 
+Stream input is size-bounded while it is read, but parsing is not constant-memory:
+the complete JSON document is retained and passed to PHP's native JSON decoder.
+Caller-owned streams remain open after parsing.
+
 Every returned DTO is immutable. A summary defaults to Mbps; conversion methods
 return a new summary whose `uploadSpeed` and `downloadSpeed` properties use the
 selected unit:
@@ -69,8 +73,12 @@ iperf3's `reverse` flag.
 Malformed JSON, incomplete result structures, unsupported protocols, invalid
 streams, and iperf3 error documents throw
 `fmohican\Iperf3Laravel\Exceptions\Iperf3ParseException`. File and stream input
-defaults to a 64 MiB limit, configurable through `iperf3.max_input_bytes`; use
-`0` to disable the guard.
+defaults to a 64 MiB limit. `iperf3.max_input_bytes` must be a positive integer
+and applies equally to strings, files, and streams.
+
+Filesystem exception messages omit local paths so they are safer to expose in
+logs or HTTP error responses. When trusted diagnostic code needs the original
+path, it can explicitly read `$exception->sourcePath()`.
 
 ## Development
 

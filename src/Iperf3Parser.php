@@ -23,30 +23,36 @@ final readonly class Iperf3Parser
 {
     private const int READ_CHUNK_BYTES = 1024 * 1024;
 
+    private const int MAX_SAFE_FLOAT_INTEGER = 9_007_199_254_740_991;
+
     public function __construct(private int $maxInputBytes = 64 * 1024 * 1024)
     {
-        if ($this->maxInputBytes < 0) {
-            throw new \InvalidArgumentException('The maximum input size cannot be negative.');
+        if ($this->maxInputBytes <= 0) {
+            throw new \InvalidArgumentException('The maximum input size must be a positive integer.');
         }
     }
 
     public function parseFile(string $path): Iperf3Result
     {
-        if (! is_file($path)) {
+        if ($path === '' || str_contains($path, "\0") || ! @file_exists($path)) {
             throw Iperf3ParseException::fileNotFound($path);
         }
 
-        if (! is_readable($path)) {
+        if (! @is_file($path)) {
+            throw Iperf3ParseException::pathNotRegularFile($path);
+        }
+
+        if (! @is_readable($path)) {
             throw Iperf3ParseException::fileNotReadable($path);
         }
 
-        $size = filesize($path);
+        $size = @filesize($path);
 
-        if ($size !== false && $this->maxInputBytes > 0 && $size > $this->maxInputBytes) {
+        if ($size !== false && ($size < 0 || $size > $this->maxInputBytes)) {
             throw Iperf3ParseException::inputTooLarge($this->maxInputBytes);
         }
 
-        $stream = fopen($path, 'rb');
+        $stream = @fopen($path, 'rb');
 
         if ($stream === false) {
             throw Iperf3ParseException::fileNotReadable($path);
@@ -61,12 +67,14 @@ final readonly class Iperf3Parser
 
     public function parseJson(string $json): Iperf3Result
     {
-        if ($json === '' || trim($json) === '') {
-            throw Iperf3ParseException::invalidPayload('the JSON document is empty.');
+        $length = strlen($json);
+
+        if ($length > $this->maxInputBytes) {
+            throw Iperf3ParseException::inputTooLarge($this->maxInputBytes);
         }
 
-        if ($this->maxInputBytes > 0 && strlen($json) > $this->maxInputBytes) {
-            throw Iperf3ParseException::inputTooLarge($this->maxInputBytes);
+        if ($length === 0 || strspn($json, " \t\r\n") === $length) {
+            throw Iperf3ParseException::invalidPayload('the JSON document is empty.');
         }
 
         try {
@@ -75,7 +83,9 @@ final readonly class Iperf3Parser
             throw Iperf3ParseException::invalidJson($exception);
         }
 
-        if (! is_array($payload)) {
+        $firstTokenOffset = strspn($json, " \t\r\n");
+
+        if ($json[$firstTokenOffset] !== '{' || ! is_array($payload)) {
             throw Iperf3ParseException::invalidPayload('the root value must be an object.');
         }
 
@@ -89,27 +99,44 @@ final readonly class Iperf3Parser
         }
 
         $json = '';
+        $bytesRead = 0;
 
-        while (! feof($stream)) {
-            $remaining = $this->maxInputBytes > 0
-                ? ($this->maxInputBytes - strlen($json)) + 1
-                : self::READ_CHUNK_BYTES;
-            $length = min(self::READ_CHUNK_BYTES, max(1, $remaining));
-            $chunk = fread($stream, $length);
+        while (true) {
+            if ($bytesRead === $this->maxInputBytes) {
+                $probe = @fread($stream, 1);
+
+                if ($probe === false) {
+                    throw Iperf3ParseException::streamReadFailed();
+                }
+
+                if ($probe !== '') {
+                    throw Iperf3ParseException::inputTooLarge($this->maxInputBytes);
+                }
+
+                if (@feof($stream)) {
+                    break;
+                }
+
+                throw Iperf3ParseException::streamReadFailed();
+            }
+
+            $length = min(self::READ_CHUNK_BYTES, $this->maxInputBytes - $bytesRead);
+            $chunk = @fread($stream, $length);
 
             if ($chunk === false) {
                 throw Iperf3ParseException::streamReadFailed();
             }
 
-            if ($chunk === '' && ! feof($stream)) {
+            if ($chunk === '') {
+                if (@feof($stream)) {
+                    break;
+                }
+
                 throw Iperf3ParseException::streamReadFailed();
             }
 
             $json .= $chunk;
-
-            if ($this->maxInputBytes > 0 && strlen($json) > $this->maxInputBytes) {
-                throw Iperf3ParseException::inputTooLarge($this->maxInputBytes);
-            }
+            $bytesRead += strlen($chunk);
         }
 
         return $this->parseJson($json);
@@ -118,8 +145,14 @@ final readonly class Iperf3Parser
     /** @param array<string, mixed> $payload */
     private function hydrate(array $payload): Iperf3Result
     {
-        if (isset($payload['error']) && is_string($payload['error'])) {
-            throw Iperf3ParseException::invalidPayload('iperf3 reported an error: ' . $payload['error']);
+        if (array_key_exists('error', $payload)) {
+            if (! is_string($payload['error'])
+                || $payload['error'] === ''
+                || strspn($payload['error'], " \t\r\n") === strlen($payload['error'])) {
+                throw Iperf3ParseException::invalidPayload('$.error must be a non-empty string.');
+            }
+
+            throw Iperf3ParseException::iperfError($payload['error']);
         }
 
         $startRaw = $this->requiredArray($payload, 'start', '$');
@@ -160,7 +193,7 @@ final readonly class Iperf3Parser
 
         if ($protocol === null) {
             throw Iperf3ParseException::invalidPayload(
-                "$.start.test_start.protocol must be TCP or UDP; {$protocolValue} given.",
+                '$.start.test_start.protocol must be TCP or UDP.',
             );
         }
 
@@ -177,11 +210,11 @@ final readonly class Iperf3Parser
             }
 
             $connections[] = new ConnectionDTO(
-                socket: $this->integer($connection, 'socket', "$.start.connected[{$index}]", 0),
+                socket: $this->integer($connection, 'socket', "$.start.connected[{$index}]", 0, minimum: 0),
                 localHost: $this->string($connection, 'local_host', "$.start.connected[{$index}]", ''),
-                localPort: $this->integer($connection, 'local_port', "$.start.connected[{$index}]", 0),
+                localPort: $this->integer($connection, 'local_port', "$.start.connected[{$index}]", 0, 0, 65_535),
                 remoteHost: $this->string($connection, 'remote_host', "$.start.connected[{$index}]", ''),
-                remotePort: $this->integer($connection, 'remote_port', "$.start.connected[{$index}]", 0),
+                remotePort: $this->integer($connection, 'remote_port', "$.start.connected[{$index}]", 0, 0, 65_535),
             );
         }
 
@@ -193,7 +226,7 @@ final readonly class Iperf3Parser
             version: $this->string($raw, 'version', '$.start', ''),
             systemInfo: $this->string($raw, 'system_info', '$.start', ''),
             timestamp: $this->nullableString($timestamp, 'time', '$.start.timestamp'),
-            timestampSeconds: $this->nullableInteger($timestamp, 'timesecs', '$.start.timestamp'),
+            timestampSeconds: $this->nullableInteger($timestamp, 'timesecs', '$.start.timestamp', minimum: 0),
             targetHost: $this->string(
                 $target,
                 'host',
@@ -205,11 +238,13 @@ final readonly class Iperf3Parser
                 'port',
                 '$.start.connecting_to',
                 $fallbackConnection?->remotePort ?? 0,
+                0,
+                65_535,
             ),
             protocol: $protocol,
-            numberOfStreams: $this->integer($test, 'num_streams', '$.start.test_start', 1),
-            durationSeconds: $this->number($test, 'duration', '$.start.test_start'),
-            intervalSeconds: $this->number($test, 'interval', '$.start.test_start', 1.0),
+            numberOfStreams: $this->integer($test, 'num_streams', '$.start.test_start', 1, minimum: 1),
+            durationSeconds: $this->number($test, 'duration', '$.start.test_start', minimum: 0.0),
+            intervalSeconds: $this->number($test, 'interval', '$.start.test_start', 1.0, PHP_FLOAT_MIN),
             reverse: $this->boolean($test, 'reverse', '$.start.test_start', false),
             bidirectional: $this->boolean($test, 'bidir', '$.start.test_start', false),
             connections: $connections,
@@ -353,47 +388,52 @@ final readonly class Iperf3Parser
     private function hydrateTcpStream(array $raw, string $path): TcpStreamDTO
     {
         return new TcpStreamDTO(
-            socket: $this->integer($raw, 'socket', $path, 0),
-            startSeconds: $this->number($raw, 'start', $path, 0.0),
-            endSeconds: $this->number($raw, 'end', $path, 0.0),
-            seconds: $this->number($raw, 'seconds', $path),
-            bytes: $this->integer($raw, 'bytes', $path),
-            bitsPerSecond: $this->number($raw, 'bits_per_second', $path),
+            socket: $this->integer($raw, 'socket', $path, 0, minimum: 0),
+            startSeconds: $this->number($raw, 'start', $path, 0.0, minimum: 0.0),
+            endSeconds: $this->number($raw, 'end', $path, 0.0, minimum: 0.0),
+            seconds: $this->number($raw, 'seconds', $path, minimum: 0.0),
+            bytes: $this->integer($raw, 'bytes', $path, minimum: 0),
+            bitsPerSecond: $this->number($raw, 'bits_per_second', $path, minimum: 0.0),
             omitted: $this->boolean($raw, 'omitted', $path, false),
             sender: $this->boolean($raw, 'sender', $path, false),
-            retransmits: $this->integer($raw, 'retransmits', $path, 0),
-            congestionWindowBytes: $this->nullableInteger($raw, 'snd_cwnd', $path),
-            rttMicroseconds: $this->nullableNumber($raw, 'rtt', $path),
-            rttVarianceMicroseconds: $this->nullableNumber($raw, 'rttvar', $path),
-            pathMtuBytes: $this->nullableInteger($raw, 'pmtu', $path),
-            meanRttMicroseconds: $this->nullableNumber($raw, 'mean_rtt', $path),
-            minimumRttMicroseconds: $this->nullableNumber($raw, 'min_rtt', $path),
-            maximumRttMicroseconds: $this->nullableNumber($raw, 'max_rtt', $path),
+            retransmits: $this->integer($raw, 'retransmits', $path, 0, minimum: 0),
+            congestionWindowBytes: $this->nullableInteger($raw, 'snd_cwnd', $path, minimum: 0),
+            rttMicroseconds: $this->nullableNumber($raw, 'rtt', $path, minimum: 0.0),
+            rttVarianceMicroseconds: $this->nullableNumber($raw, 'rttvar', $path, minimum: 0.0),
+            pathMtuBytes: $this->nullableInteger($raw, 'pmtu', $path, minimum: 0),
+            meanRttMicroseconds: $this->nullableNumber($raw, 'mean_rtt', $path, minimum: 0.0),
+            minimumRttMicroseconds: $this->nullableNumber($raw, 'min_rtt', $path, minimum: 0.0),
+            maximumRttMicroseconds: $this->nullableNumber($raw, 'max_rtt', $path, minimum: 0.0),
         );
     }
 
     /** @param array<string, mixed> $raw */
     private function hydrateUdpStream(array $raw, string $path): UdpStreamDTO
     {
-        $packets = $this->integer($raw, 'packets', $path, 0);
-        $lostPackets = $this->integer($raw, 'lost_packets', $path, 0);
-        $lostPercent = $this->nullableNumber($raw, 'lost_percent', $path)
+        $packets = $this->integer($raw, 'packets', $path, 0, minimum: 0);
+        $lostPackets = $this->integer($raw, 'lost_packets', $path, 0, minimum: 0);
+
+        if ($lostPackets > $packets) {
+            throw Iperf3ParseException::invalidPayload("{$path}.lost_packets cannot exceed packets.");
+        }
+
+        $lostPercent = $this->nullableNumber($raw, 'lost_percent', $path, 0.0, 100.0)
             ?? ($packets > 0 ? ($lostPackets / $packets) * 100.0 : 0.0);
 
         return new UdpStreamDTO(
-            socket: $this->integer($raw, 'socket', $path, 0),
-            startSeconds: $this->number($raw, 'start', $path, 0.0),
-            endSeconds: $this->number($raw, 'end', $path, 0.0),
-            seconds: $this->number($raw, 'seconds', $path),
-            bytes: $this->integer($raw, 'bytes', $path),
-            bitsPerSecond: $this->number($raw, 'bits_per_second', $path),
+            socket: $this->integer($raw, 'socket', $path, 0, minimum: 0),
+            startSeconds: $this->number($raw, 'start', $path, 0.0, minimum: 0.0),
+            endSeconds: $this->number($raw, 'end', $path, 0.0, minimum: 0.0),
+            seconds: $this->number($raw, 'seconds', $path, minimum: 0.0),
+            bytes: $this->integer($raw, 'bytes', $path, minimum: 0),
+            bitsPerSecond: $this->number($raw, 'bits_per_second', $path, minimum: 0.0),
             omitted: $this->boolean($raw, 'omitted', $path, false),
             sender: $this->boolean($raw, 'sender', $path, false),
-            jitterMs: $this->number($raw, 'jitter_ms', $path, 0.0),
+            jitterMs: $this->number($raw, 'jitter_ms', $path, 0.0, minimum: 0.0),
             lostPackets: $lostPackets,
             packets: $packets,
             lostPacketsPercent: $lostPercent,
-            outOfOrderPackets: $this->integer($raw, 'out_of_order', $path, 0),
+            outOfOrderPackets: $this->integer($raw, 'out_of_order', $path, 0, minimum: 0),
         );
     }
 
@@ -401,12 +441,12 @@ final readonly class Iperf3Parser
     private function hydrateCpu(array $raw): CpuUtilizationDTO
     {
         return new CpuUtilizationDTO(
-            hostTotal: $this->number($raw, 'host_total', '$.end.cpu_utilization_percent', 0.0),
-            hostUser: $this->number($raw, 'host_user', '$.end.cpu_utilization_percent', 0.0),
-            hostSystem: $this->number($raw, 'host_system', '$.end.cpu_utilization_percent', 0.0),
-            remoteTotal: $this->number($raw, 'remote_total', '$.end.cpu_utilization_percent', 0.0),
-            remoteUser: $this->number($raw, 'remote_user', '$.end.cpu_utilization_percent', 0.0),
-            remoteSystem: $this->number($raw, 'remote_system', '$.end.cpu_utilization_percent', 0.0),
+            hostTotal: $this->number($raw, 'host_total', '$.end.cpu_utilization_percent', 0.0, minimum: 0.0),
+            hostUser: $this->number($raw, 'host_user', '$.end.cpu_utilization_percent', 0.0, minimum: 0.0),
+            hostSystem: $this->number($raw, 'host_system', '$.end.cpu_utilization_percent', 0.0, minimum: 0.0),
+            remoteTotal: $this->number($raw, 'remote_total', '$.end.cpu_utilization_percent', 0.0, minimum: 0.0),
+            remoteUser: $this->number($raw, 'remote_user', '$.end.cpu_utilization_percent', 0.0, minimum: 0.0),
+            remoteSystem: $this->number($raw, 'remote_system', '$.end.cpu_utilization_percent', 0.0, minimum: 0.0),
         );
     }
 
@@ -469,8 +509,14 @@ final readonly class Iperf3Parser
     }
 
     /** @param array<string, mixed> $source */
-    private function number(array $source, string $key, string $path, ?float $default = null): float
-    {
+    private function number(
+        array $source,
+        string $key,
+        string $path,
+        ?float $default = null,
+        ?float $minimum = null,
+        ?float $maximum = null,
+    ): float {
         if (! array_key_exists($key, $source)) {
             if ($default !== null) {
                 return $default;
@@ -483,18 +529,45 @@ final readonly class Iperf3Parser
             throw Iperf3ParseException::invalidPayload("{$path}.{$key} must be numeric.");
         }
 
-        return (float) $source[$key];
+        $value = (float) $source[$key];
+
+        if (! is_finite($value)) {
+            throw Iperf3ParseException::invalidPayload("{$path}.{$key} must be finite.");
+        }
+
+        if ($minimum !== null && $value < $minimum) {
+            throw Iperf3ParseException::invalidPayload("{$path}.{$key} must be at least {$minimum}.");
+        }
+
+        if ($maximum !== null && $value > $maximum) {
+            throw Iperf3ParseException::invalidPayload("{$path}.{$key} must be at most {$maximum}.");
+        }
+
+        return $value;
     }
 
     /** @param array<string, mixed> $source */
-    private function nullableNumber(array $source, string $key, string $path): ?float
-    {
-        return array_key_exists($key, $source) ? $this->number($source, $key, $path) : null;
+    private function nullableNumber(
+        array $source,
+        string $key,
+        string $path,
+        ?float $minimum = null,
+        ?float $maximum = null,
+    ): ?float {
+        return array_key_exists($key, $source)
+            ? $this->number($source, $key, $path, minimum: $minimum, maximum: $maximum)
+            : null;
     }
 
     /** @param array<string, mixed> $source */
-    private function integer(array $source, string $key, string $path, ?int $default = null): int
-    {
+    private function integer(
+        array $source,
+        string $key,
+        string $path,
+        ?int $default = null,
+        ?int $minimum = null,
+        ?int $maximum = null,
+    ): int {
         if (! array_key_exists($key, $source)) {
             if ($default !== null) {
                 return $default;
@@ -503,17 +576,44 @@ final readonly class Iperf3Parser
             throw Iperf3ParseException::invalidPayload("{$path}.{$key} is required.");
         }
 
-        if (! is_int($source[$key])) {
+        $value = $source[$key];
+
+        if (is_float($value)) {
+            if (! is_finite($value)
+                || floor($value) !== $value
+                || abs($value) > self::MAX_SAFE_FLOAT_INTEGER) {
+                throw Iperf3ParseException::invalidPayload("{$path}.{$key} must be a safely representable integer.");
+            }
+
+            $value = (int) $value;
+        }
+
+        if (! is_int($value)) {
             throw Iperf3ParseException::invalidPayload("{$path}.{$key} must be an integer.");
         }
 
-        return $source[$key];
+        if ($minimum !== null && $value < $minimum) {
+            throw Iperf3ParseException::invalidPayload("{$path}.{$key} must be at least {$minimum}.");
+        }
+
+        if ($maximum !== null && $value > $maximum) {
+            throw Iperf3ParseException::invalidPayload("{$path}.{$key} must be at most {$maximum}.");
+        }
+
+        return $value;
     }
 
     /** @param array<string, mixed> $source */
-    private function nullableInteger(array $source, string $key, string $path): ?int
-    {
-        return array_key_exists($key, $source) ? $this->integer($source, $key, $path) : null;
+    private function nullableInteger(
+        array $source,
+        string $key,
+        string $path,
+        ?int $minimum = null,
+        ?int $maximum = null,
+    ): ?int {
+        return array_key_exists($key, $source)
+            ? $this->integer($source, $key, $path, minimum: $minimum, maximum: $maximum)
+            : null;
     }
 
     /** @param array<string, mixed> $source */

@@ -47,18 +47,18 @@ final readonly class Iperf3Result implements JsonSerializable
         $sent ??= $aggregate;
         $received ??= $aggregate;
 
-        $rttTotal = 0.0;
+        $averageRtt = 0.0;
         $rttSamples = 0;
 
         if ($sent?->meanRttMicroseconds !== null) {
-            $rttTotal = $sent->meanRttMicroseconds;
+            $averageRtt = $sent->meanRttMicroseconds;
             $rttSamples = 1;
         } else {
             foreach ($this->end->streams as $endStream) {
                 if ($endStream instanceof TcpEndStreamDTO
                     && $endStream->sender?->meanRttMicroseconds !== null) {
-                    $rttTotal += $endStream->sender->meanRttMicroseconds;
                     $rttSamples++;
+                    $averageRtt += ($endStream->sender->meanRttMicroseconds - $averageRtt) / $rttSamples;
                 }
             }
         }
@@ -71,8 +71,8 @@ final readonly class Iperf3Result implements JsonSerializable
 
                 foreach ($interval->streams as $stream) {
                     if (! $stream->omitted && $stream->rttMicroseconds !== null) {
-                        $rttTotal += $stream->rttMicroseconds;
                         $rttSamples++;
+                        $averageRtt += ($stream->rttMicroseconds - $averageRtt) / $rttSamples;
                     }
                 }
             }
@@ -90,7 +90,7 @@ final readonly class Iperf3Result implements JsonSerializable
             lostPackets: 0,
             packets: 0,
             lostPacketsPercent: 0.0,
-            averageRttMs: $rttSamples > 0 ? ($rttTotal / $rttSamples) / 1_000.0 : null,
+            averageRttMs: $rttSamples > 0 ? $averageRtt / 1_000.0 : null,
             cpuUtilization: $this->end->cpuUtilization,
         );
     }

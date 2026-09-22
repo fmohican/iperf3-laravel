@@ -74,7 +74,7 @@ final class SummaryDTO implements JsonSerializable
     public function jsonSerialize(): array
     {
         return [
-            'protocol' => $this->protocol->value,
+            'protocol' => $this->protocol,
             'duration_seconds' => $this->durationSeconds,
             'upload_bits_per_second' => $this->uploadBitsPerSecond,
             'download_bits_per_second' => $this->downloadBitsPerSecond,
